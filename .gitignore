@@ -2,3 +2,5 @@ __pycache__/
 .skillman/state.json
 .skillman/lock
 .skillman/staging/
+
+.DS_Store
