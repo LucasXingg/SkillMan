@@ -1,0 +1,1 @@
+"""Local, offline skill management."""

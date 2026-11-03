@@ -1,0 +1,19 @@
+# Paths may be absolute, relative to this folder's parent, or start with ~.
+sources = ["~/.codex/skills", "~/.claude/skills", "~/.agents/skills"]
+exclude = [".system", ".git", "node_modules", "cache", ".cache", "plugins"]
+
+# Resolve conflicts with original-name = "stored-directory-name".
+[selection]
+
+[targets.codex]
+path = "~/.codex/skills"
+enabled = true
+# skills = ["example"] # Omit to deploy all unambiguous skills.
+
+[targets.claude]
+path = "~/.claude/skills"
+enabled = true
+
+[targets.agents]
+path = "~/.agents/skills"
+enabled = true
