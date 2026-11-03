@@ -1,6 +1,6 @@
 # SkillMan
 
-使用 VS Code 编辑一个集中的 skills 文件夹，通过本地命令收集现有 skills，再用软链接分发给 Codex、Claude 和其他 agent。
+SkillMan 是一个 CLI skill 管理器，通过本地命令收集现有 skills，再用软链接分发给 Codex、Claude 和其他 agent。
 
 支持 macOS / Linux、Python 3.11+、zsh。只使用 Python 标准库，无全局安装，无 npx，无运行时下载或网络访问。启动器会从 PATH 中选择兼容的 Python；macOS 自带 Python 可能版本过低，需要自行准备 Python 3.11+。
 
@@ -49,6 +49,17 @@ skillman deploy --target codex --target claude
 ```
 
 `--from` 和 `--target` 可重复指定。额外来源与配置来源一起扫描。指定目标时允许选择配置中 `enabled = false` 的目标，但批量分发仍遵循每个 skill 的 `.skillman` 开关。原位置属于配置目标时也遵循目标筛选；其他额外来源仅在未指定 `--target` 时回链。
+
+每个 skill 顶层的 `.skillman` 是 TOML 格式的分发开关文件，用于控制该 skill 分发到哪些 agent，与管理目录中的 `.skillman/` 配置和状态目录不同。例如：
+
+```toml
+codex = true
+claude = false
+```
+
+`collect` 会为没有此文件的 skill 创建 `.skillman`，将当前配置的所有目标设为 `true`；已有文件保持不变。批量 `deploy`（包括仅指定 `--target`）只向开关为 `true` 的目标建立链接，同时仍遵循目标级 `skills` 子集。文件存在但未列出的目标默认关闭；没有此文件的旧 skill 或手工添加的 skill 则默认允许全部目标。
+
+单独执行 `skillman deploy review --target codex` 时，会将该 skill 的 `codex` 开关保存为 `true`，并覆盖目标级 `skills` 子集限制；`--dry-run` 只预览，不写入。将开关改为 `false` 后，需执行 `deploy` 才会清理本次同步范围内由 SkillMan 创建且未被外部改动的旧链接，不会删除 skill 内容或覆盖实体目录。`.skillman` 不参与内容去重，合并相同内容时保留集中目录已有的开关配置。
 
 ## 配置
 
