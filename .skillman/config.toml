@@ -8,12 +8,15 @@ exclude = [".system", ".git", "node_modules", "cache", ".cache", "plugins"]
 [targets.codex]
 path = "~/.codex/skills"
 enabled = true
+disable_default_backlink = true
 # skills = ["example"] # Omit to deploy all unambiguous skills.
 
 [targets.claude]
 path = "~/.claude/skills"
 enabled = true
+disable_default_backlink = false
 
 [targets.agents]
 path = "~/.agents/skills"
 enabled = true
+disable_default_backlink = false

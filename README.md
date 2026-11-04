@@ -24,6 +24,32 @@ source "/absolute/path/to/SkillMan/scripts/hook.zsh"
 
 `open` 使用 VS Code 的 `code` 命令；未找到时打印文件夹路径，可从 VS Code 手动打开。
 
+在 `.skillman/config.toml` 的每个目标下，可单独关闭新 skill 的默认回链：
+
+```toml
+[targets.codex]
+path = "~/.codex/skills"
+enabled = true
+disable_default_backlink = true
+```
+
+`disable_default_backlink = true` 表示生成 skill 的 `.skillman` 时，将该目标初始化为 `false`；设为 `false` 或省略则初始化为 `true`。`init` 生成的配置会为每个目标列出该选项，默认 `false`，且不会覆盖已有配置。此选项只影响之后创建的 skill 开关文件，已有开关保持不变，实际建立链接仍需执行 `deploy`。
+
+## 新建 skill
+
+```sh
+skillman new
+# 也可预先提供名称，再交互填写描述和执行说明
+skillman new code-review
+# 通过参数直接创建，适合脚本使用
+skillman new code-review --description "审查代码变更，在代码评审时使用" \
+  --instructions "阅读变更，检查正确性并给出建议" --no-interactive
+```
+
+交互时依次填写名称、描述（用途及使用时机）和可选执行说明。名称最长 64 个字符，使用小写字母、数字和单个连字符连接。生成 `skills/<名称>/SKILL.md`，包含 `name`、`description` 元信息、执行说明和示例占位内容，同时创建遵循各目标 `disable_default_backlink` 设置的 `.skillman`。已有同名目录或链接会报错并保留；Ctrl-C 或输入结束会取消创建。
+
+`--no-interactive` 要求通过参数提供名称和非空描述，执行说明可以省略；省略时模板中保留 TODO。`--dry-run` 可预览创建路径，不写文件。新建后可编辑模板，再执行 `skillman deploy <名称>` 分发。
+
 ## 收集、编辑、分发
 
 先检查 `.skillman/config.toml` 中的来源和目标，再执行：
@@ -57,7 +83,7 @@ codex = true
 claude = false
 ```
 
-`collect` 会为没有此文件的 skill 创建 `.skillman`，将当前配置的所有目标设为 `true`；已有文件保持不变。批量 `deploy`（包括仅指定 `--target`）只向开关为 `true` 的目标建立链接，同时仍遵循目标级 `skills` 子集。文件存在但未列出的目标默认关闭；没有此文件的旧 skill 或手工添加的 skill 则默认允许全部目标。
+`collect` 会为没有此文件的 skill 创建 `.skillman`，按各目标的 `disable_default_backlink` 设置初始化开关：该选项为 `true` 时开关设为 `false`，否则设为 `true`；已有文件保持不变。批量 `deploy`（包括仅指定 `--target`）只向开关为 `true` 的目标建立链接，同时仍遵循目标级 `skills` 子集。文件存在但未列出的目标默认关闭；没有此文件的旧 skill 或手工添加的 skill 则默认允许全部目标。此默认值控制配置目标的开关；不属于配置目标的额外来源仍遵循前述原位置回链规则。
 
 单独执行 `skillman deploy review --target codex` 时，会将该 skill 的 `codex` 开关保存为 `true`，并覆盖目标级 `skills` 子集限制；`--dry-run` 只预览，不写入。将开关改为 `false` 后，需执行 `deploy` 才会清理本次同步范围内由 SkillMan 创建且未被外部改动的旧链接，不会删除 skill 内容或覆盖实体目录。`.skillman` 不参与内容去重，合并相同内容时保留集中目录已有的开关配置。
 
@@ -74,11 +100,13 @@ exclude = [".system", ".git", "node_modules", "cache", ".cache", "plugins"]
 [targets.codex]
 path = "~/.codex/skills"
 enabled = true
+disable_default_backlink = false # 设为 true 则新 skill 默认不回链此目标
 skills = ["review", "writing"] # 省略即分发所有无冲突的 skills
 
 [targets.custom]
 path = "/path/to/project/.agent/skills"
 enabled = false
+disable_default_backlink = true
 ```
 
 排除项按目录名称匹配。不存在的来源跳过；读取权限不足会报告错误。默认跳过 agent 系统 skills 和插件缓存，不会扫描整块磁盘。
@@ -96,7 +124,7 @@ review = "review--0123456789"
 
 选择的版本以 `review` 分发，并回链到该组全部原位置。也可以在 VS Code 中重命名版本目录来独立分发。若重命名了已收集目录，用 `[selection]` 中的 `原名称 = "新目录名"` 恢复原位置回链。版本分组记录保存在状态文件中，文件名本身可以包含 `--`。
 
-手工新建 `skills/<名称>/SKILL.md` 即可添加 skill。删除或重命名目录后，`status` 会报告缺失源、待分发项或失效链接。
+使用 `skillman new` 创建模板，或手工新建 `skills/<名称>/SKILL.md` 即可添加 skill。删除或重命名目录后，`status` 会报告缺失源、待分发项或失效链接。
 
 ## 文件保护与恢复
 
@@ -121,7 +149,7 @@ PYTHONPATH=src python3.11 -m unittest discover -s tests -v
 
 ## 每个 skill 的分发开关与单独分发
 
-`collect` 在收集到的目录顶层创建 `.skillman`（TOML），列出当前配置的所有目标，初始值为 `true`：
+`collect` 在收集到的目录顶层创建 `.skillman`（TOML），列出当前配置的所有目标，初始值遵循每个目标的 `disable_default_backlink` 设置（省略时开关为 `true`）。之后可以逐项编辑，例如：
 
 ```toml
 codex = true

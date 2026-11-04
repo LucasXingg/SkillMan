@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -168,6 +169,110 @@ class Workflow(unittest.TestCase):
         self.assertFalse(self.target.exists())
         self.assertEqual(self.run_cli('deploy'), 0)
         self.assertFalse(self.target.exists())
+
+    def test_init_default_backlinks_and_existing_config_preserved(self):
+        self.root = self.base / 'fresh'
+        self.assertEqual(self.run_cli('init'), 0)
+        config = self.root / '.skillman/config.toml'
+        self.assertTrue(all(target['disable_default_backlink'] is False
+                            for target in tomllib.loads(config.read_text())['targets'].values()))
+        before = self.snapshot()
+        self.assertEqual(self.run_cli('init'), 0)
+        self.assertEqual(before, self.snapshot())
+
+    def test_collect_default_backlinks_disabled_preserves_existing_switches(self):
+        self.configure()
+        with (self.root / '.skillman/config.toml').open('a') as stream:
+            stream.write('disable_default_backlink = true\n')
+        original = self.skill(self.target)
+        existing = self.skill(self.source, name='existing')
+        (existing / '.skillman').write_text('test = true\n')
+        before = self.snapshot()
+        self.assertEqual(self.run_cli('collect', '--from', str(self.target), '--dry-run'), 0)
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual(self.run_cli('collect', '--from', str(self.target)), 0)
+        config = self.root / 'skills/example/.skillman'
+        self.assertEqual(tomllib.loads(config.read_text()), {'test': False})
+        self.assertEqual((self.root / 'skills/existing/.skillman').read_text(), 'test = true\n')
+        self.assertEqual(self.run_cli('deploy'), 0)
+        self.assertFalse(os.path.lexists(original))
+        self.assertTrue((self.target / 'existing').is_symlink())
+        self.assertEqual(self.run_cli('deploy', 'example', '--target', 'test'), 0)
+        self.assertEqual(tomllib.loads(config.read_text()), {'test': True})
+        self.assertTrue(original.is_symlink())
+
+    def test_invalid_default_backlinks_rejected_before_collection(self):
+        self.configure()
+        with (self.root / '.skillman/config.toml').open('a') as stream:
+            stream.write('disable_default_backlink = "true"\n')
+        self.skill(self.source)
+        before = self.snapshot()
+        self.assertEqual(self.run_cli('collect'), 1)
+        self.assertEqual(before, self.snapshot())
+
+    def test_collect_target_defaults_are_independent(self):
+        second = self.base / 'second'
+        with (self.root / '.skillman/config.toml').open('a') as stream:
+            stream.write('disable_default_backlink = true\n'
+                         f'[targets.second]\npath = "{second}"\n'
+                         'disable_default_backlink = false\n')
+        self.skill(self.source)
+        self.assertEqual(self.run_cli('collect'), 0)
+        config = self.root / 'skills/example/.skillman'
+        self.assertEqual(tomllib.loads(config.read_text()), {'test': False, 'second': True})
+        self.assertEqual(self.run_cli('deploy'), 0)
+        self.assertFalse(self.target.exists())
+        self.assertTrue((second / 'example').is_symlink())
+
+    def test_new_interactive_template_and_deployment(self):
+        with patch('builtins.input', side_effect=['code-review', '检查代码：在审查时使用', '先阅读修改，再给出建议']):
+            self.assertEqual(self.run_cli('new'), 0)
+        skill = self.root / 'skills/code-review'
+        content = (skill / 'SKILL.md').read_text()
+        self.assertIn('name: "code-review"', content)
+        self.assertIn('description: "检查代码：在审查时使用"', content)
+        self.assertIn('先阅读修改，再给出建议', content)
+        self.assertEqual(tomllib.loads((skill / '.skillman').read_text()), {'test': True})
+        self.assertEqual(self.run_cli('deploy', 'code-review'), 0)
+        self.assertTrue((self.target / 'code-review').is_symlink())
+
+    def test_new_arguments_dry_run_and_disabled_defaults(self):
+        self.configure()
+        with (self.root / '.skillman/config.toml').open('a') as stream:
+            stream.write('disable_default_backlink = true\n')
+        args = ('new', 'review', '--description', 'Review "code": safely\nWhen asked.', '--no-interactive')
+        before = self.snapshot()
+        with patch('builtins.input', side_effect=AssertionError('Unexpected prompt')):
+            self.assertEqual(self.run_cli(*args, '--dry-run'), 0)
+            self.assertEqual(before, self.snapshot())
+            self.assertEqual(self.run_cli(*args), 0)
+        skill = self.root / 'skills/review'
+        self.assertIn('TODO:', (skill / 'SKILL.md').read_text())
+        self.assertIn('Review \\"code\\": safely\\nWhen asked.', (skill / 'SKILL.md').read_text())
+        self.assertEqual(tomllib.loads((skill / '.skillman').read_text()), {'test': False})
+
+    def test_new_rejects_unsafe_names_missing_fields_and_existing_paths(self):
+        existing = self.skill(self.root / 'skills', name='existing')
+        (self.root / 'skills/foreign').symlink_to('/missing/foreign')
+        before = self.snapshot()
+        for name in ('../outside', '/tmp/outside', '.', 'has space', 'UPPER', 'x' * 65,
+                     'existing', 'foreign'):
+            with self.subTest(name=name):
+                self.assertEqual(self.run_cli('new', name, '--description', 'Test', '--no-interactive'), 1)
+        self.assertEqual(self.run_cli('new', '--no-interactive'), 1)
+        self.assertEqual(self.run_cli('new', 'missing-description', '--no-interactive'), 1)
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual((existing / 'SKILL.md').read_text(), 'hello')
+
+    def test_new_cancel_and_write_failure_leave_no_partial_skill(self):
+        before = self.snapshot()
+        for interruption in (EOFError, KeyboardInterrupt):
+            with patch('builtins.input', side_effect=['review', interruption()]):
+                self.assertEqual(self.run_cli('new'), 1)
+            self.assertEqual(before, self.snapshot())
+        with patch('skillman.cli.Manager.create_skill_config', side_effect=OSError('write failed')):
+            self.assertEqual(self.run_cli('new', 'review', '--description', 'Test', '--no-interactive'), 1)
+        self.assertEqual(before, self.snapshot())
 
     def test_single_skill_target_override(self):
         self.skill(self.source)

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -18,12 +19,15 @@ exclude = [".system", ".git", "node_modules", "cache", ".cache", "plugins"]
 [targets.codex]
 path = "~/.codex/skills"
 enabled = true
+disable_default_backlink = false
 [targets.claude]
 path = "~/.claude/skills"
 enabled = true
+disable_default_backlink = false
 [targets.agents]
 path = "~/.agents/skills"
 enabled = true
+disable_default_backlink = false
 '''
 
 
@@ -96,6 +100,9 @@ class Manager:
             except BlockingIOError:
                 raise ValueError('Another SkillMan command is running.') from None
             self.config = tomllib.loads((self.meta / 'config.toml').read_text())
+            for name, target in self.config.get('targets', {}).items():
+                if type(target.get('disable_default_backlink', False)) is not bool:
+                    raise ValueError(f'targets.{name}.disable_default_backlink must be true or false')
             if self.state_path.exists():
                 self.state = json.loads(self.state_path.read_text())
             self.state.setdefault('groups', {})
@@ -185,10 +192,52 @@ class Manager:
         path = destination / '.skillman'
         if not os.path.lexists(path):
             text = '# Distribution targets (TOML)\n'
-            text += ''.join(f'{json.dumps(name)} = true\n'
-                            for name in self.config.get('targets', {}))
+            for name, target in self.config.get('targets', {}).items():
+                enabled = not target.get('disable_default_backlink', False)
+                text += f'{json.dumps(name)} = {str(enabled).lower()}\n'
             with path.open('x') as stream:
                 stream.write(text)
+
+    def new(self, name, description, instructions, interactive, dry):
+        def ask(label, value, required=False):
+            if value is None and interactive:
+                value = input(label + ': ').strip()
+            value = (value or '').strip()
+            if required and not value:
+                raise ValueError(f'{label} is required')
+            return value
+
+        name = ask('Skill name (lowercase letters, digits, hyphens)', name, True)
+        if not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', name) or len(name) > 64:
+            raise ValueError('Skill name must be at most 64 lowercase letters, digits, '
+                             'or single hyphens between words')
+        destination = self.skills / name
+        if os.path.lexists(destination):
+            raise ValueError(f'Skill path already exists: {destination}')
+        description = ask('Description (what it does and when to use it)', description, True)
+        instructions = ask('Instructions (optional)', instructions)
+        title = name.replace('-', ' ').title()
+        content = (f'---\nname: {json.dumps(name)}\n'
+                   f'description: {json.dumps(description, ensure_ascii=False)}\n---\n\n'
+                   f'# {title}\n\n## Instructions\n\n'
+                   f'{instructions or "TODO: Describe the steps the agent should follow."}\n\n'
+                   '## Examples\n\nTODO: Add example requests and expected results.\n')
+        print(f'CREATE {destination}')
+        if dry:
+            return 0
+        # Publish a complete template; failures leave no partial skill directory.
+        staging = Path(tempfile.mkdtemp(prefix='new-', dir=self.meta))
+        try:
+            skill = staging / name
+            skill.mkdir()
+            (skill / 'SKILL.md').write_text(content, encoding='utf-8')
+            self.create_skill_config(skill)
+            if os.path.lexists(destination):
+                raise ValueError(f'Skill path already exists: {destination}')
+            os.rename(skill, destination)
+        finally:
+            shutil.rmtree(staging)
+        return 0
 
     def collect(self, extra, dry):
         sources = list(self.config.get('sources', [])) + extra
@@ -413,7 +462,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog='skillman', description='Manage local agent skills, offline.')
     parser.add_argument('--root', type=Path, default=Path.cwd())
     commands = parser.add_subparsers(dest='command', required=True)
-    for command in ('init', 'open', 'status'):
+    commands.add_parser('init')
+    new = commands.add_parser('new', help='Create a skill template interactively')
+    new.add_argument('name', nargs='?')
+    new.add_argument('--description')
+    new.add_argument('--instructions')
+    new.add_argument('--no-interactive', action='store_true', help='Require name and description as arguments')
+    new.add_argument('--dry-run', action='store_true')
+    for command in ('open', 'status'):
         commands.add_parser(command)
     collect = commands.add_parser('collect')
     collect.add_argument('--from', dest='sources', action='append', default=[])
@@ -436,11 +492,17 @@ def main(argv=None):
                 return 0
             return subprocess.call([code, str(manager.root)])
         with manager.locked(dry=getattr(args, 'dry_run', False) or args.command == 'status'):
+            if args.command == 'new':
+                return manager.new(args.name, args.description, args.instructions,
+                                   not args.no_interactive, args.dry_run)
             if args.command == 'collect':
                 return manager.collect(args.sources, args.dry_run)
             if args.command == 'deploy':
                 return manager.deploy(args.target, args.dry_run, args.skill)
             return manager.status()
+    except (EOFError, KeyboardInterrupt):
+        print('\nCancelled.', file=sys.stderr)
+        return 1
     except (OSError, ValueError, KeyError) as error:
         print(f'Error: {error}', file=sys.stderr)
         return 1
